@@ -1,0 +1,11 @@
+[package]
+name = "wroom-ten"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "0.15.1"
+winit = "0.28"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+pollster = "0.3"
