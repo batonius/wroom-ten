@@ -122,7 +122,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
-            rpass.draw(0..3, 0..1);
+            rpass.draw(0..6, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
