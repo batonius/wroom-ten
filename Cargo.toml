@@ -9,3 +9,4 @@ winit = "0.28"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 pollster = "0.3"
+bytemuck = { version = "1.13", features = ["derive"] }

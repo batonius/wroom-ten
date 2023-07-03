@@ -40,7 +40,12 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // Ray-tracing stars here
-const CAMERA_POS: vec3<f32> = vec3<f32>(0.0, 0.0, -1.0);
+struct RayTracingParams {
+    camera_pos: vec4<f32>,    
+};
+
+@group(0) @binding(0) var<uniform> params: RayTracingParams;
+
 const CAMERA_X_AXIS: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 const CAMERA_Y_AXIS: vec3<f32> = vec3<f32>(0.0, -1.0, 0.0);
 
@@ -51,9 +56,9 @@ struct Ray {
 
 fn make_start_ray_for_point(coord: vec2<f32>) -> Ray {
     var ray: Ray;
-    ray.origin = CAMERA_POS;
+    ray.origin = params.camera_pos.xyz;
     let dir_point = (coord.x - 0.5) * CAMERA_X_AXIS + (coord.y - 0.5) * CAMERA_Y_AXIS;
-    ray.dir = dir_point - CAMERA_POS;
+    ray.dir = dir_point - params.camera_pos.xyz;
     return ray;
 }
 

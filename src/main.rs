@@ -1,4 +1,6 @@
+use bytemuck::{Pod, Zeroable};
 use pollster::FutureExt as _;
+use std::mem;
 use tracing::debug;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -6,12 +8,21 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct RayTracingParams {
+    camera_pos: [f32; 4],
+}
+
 struct Renderer {
     surface: wgpu::Surface,
     surface_config: wgpu::SurfaceConfiguration,
     queue: wgpu::Queue,
     device: wgpu::Device,
     render_pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    camera_x: f32,
 }
 
 impl Renderer {
@@ -46,9 +57,39 @@ impl Renderer {
                 "shader.wgsl"
             ))),
         });
+        let bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            mem::size_of::<RayTracingParams>() as _
+                        ),
+                    },
+                    count: None,
+                }],
+            });
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: mem::size_of::<RayTracingParams>() as _,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
         let swapchain_capabilities = surface.get_capabilities(&adapter);
@@ -88,6 +129,9 @@ impl Renderer {
             queue,
             device,
             render_pipeline,
+            uniform_buffer,
+            bind_group,
+            camera_x: 0.0f32,
         }
     }
 
@@ -108,6 +152,13 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[RayTracingParams {
+                camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
+            }]),
+        );
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -122,10 +173,15 @@ impl Renderer {
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.draw(0..6, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+    }
+
+    fn move_x(&mut self, delta: f32) {
+        self.camera_x += delta;
     }
 }
 
@@ -152,6 +208,30 @@ async fn run() {
             } => *control_flow = ControlFlow::Exit,
             WindowEvent::Resized(size) => {
                 renderer.resize(size.width, size.height);
+            }
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::Left),
+                        ..
+                    },
+                ..
+            } => {
+                renderer.move_x(-0.1);
+                renderer.render();
+            }
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::Right),
+                        ..
+                    },
+                ..
+            } => {
+                renderer.move_x(0.1);
+                renderer.render();
             }
             _ => {}
         },
