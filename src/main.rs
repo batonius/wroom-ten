@@ -14,6 +14,8 @@ struct RayTracingParams {
     camera_pos: [f32; 4],
 }
 
+const SAMPLE_COUNT: u32 = 4;
+
 struct Renderer {
     surface: wgpu::Surface,
     surface_config: wgpu::SurfaceConfiguration,
@@ -22,6 +24,7 @@ struct Renderer {
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    multisampled_framebuffer: wgpu::TextureView,
     camera_x: f32,
 }
 
@@ -44,8 +47,6 @@ impl Renderer {
                     label: None,
                     features: wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
                     limits: adapter.limits(),
-                    // limits: wgpu::Limits::downlevel_webgl2_defaults()
-                    //     .using_resolution(adapter.limits()),
                 },
                 None,
             )
@@ -109,7 +110,10 @@ impl Renderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: 4,
+                ..Default::default()
+            },
             multiview: None,
         });
 
@@ -123,6 +127,27 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);
+
+        let multisampled_texture_extend = wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        };
+        let multisampled_texture_descriptor = wgpu::TextureDescriptor {
+            label: None,
+            size: multisampled_texture_extend,
+            mip_level_count: 1,
+            sample_count: SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: swapchain_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+
+        let multisampled_framebuffer = device
+            .create_texture(&multisampled_texture_descriptor)
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         Renderer {
             surface,
             surface_config,
@@ -131,6 +156,7 @@ impl Renderer {
             render_pipeline,
             uniform_buffer,
             bind_group,
+            multisampled_framebuffer,
             camera_x: 0.0f32,
         }
     }
@@ -139,6 +165,26 @@ impl Renderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
+        let multisampled_texture_extend = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let multisampled_texture_descriptor = wgpu::TextureDescriptor {
+            label: None,
+            size: multisampled_texture_extend,
+            mip_level_count: 1,
+            sample_count: SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+
+        self.multisampled_framebuffer = self
+            .device
+            .create_texture(&multisampled_texture_descriptor)
+            .create_view(&wgpu::TextureViewDescriptor::default());
     }
 
     fn render(&mut self) {
@@ -163,11 +209,11 @@ impl Renderer {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.multisampled_framebuffer,
+                    resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: true,
+                        store: false,
                     },
                 })],
                 depth_stencil_attachment: None,
