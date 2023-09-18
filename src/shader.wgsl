@@ -42,6 +42,7 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 // Ray-tracing stars here
 struct RayTracingParams {
     camera_pos: vec4<f32>,    
+    aspect_ratio: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: RayTracingParams;
@@ -52,6 +53,8 @@ const F32_MAX: f32 = 3.40282347E+38;
 const EPSILON: f32 = 0.0001;
 const SPHERE_R: f32 = 1.0;
 const SPHERE_POS: vec3<f32> = vec3<f32>(0.0, 0.0, 10.0);
+const REFLECTIONS_N: i32 = 5;
+const MAX_TOI: f32 = 100000.0;
 
 struct Ray {
     origin: vec3<f32>,
@@ -61,7 +64,7 @@ struct Ray {
 fn make_start_ray_for_point(coord: vec2<f32>) -> Ray {
     var ray: Ray;
     ray.origin = params.camera_pos.xyz;
-    let dir_point = (coord.x - 0.5) * CAMERA_X_AXIS + (coord.y - 0.5) * CAMERA_Y_AXIS;
+    let dir_point = (coord.x - 0.5) * CAMERA_X_AXIS + (coord.y - 0.5) * CAMERA_Y_AXIS / params.aspect_ratio.x;
     ray.dir = dir_point - params.camera_pos.xyz;
     return ray;
 }
@@ -88,52 +91,103 @@ fn intersects_sphere(ray: Ray, pos: vec3<f32>, r: f32) -> f32 {
     return min(t1, t2);
 }
 
-fn cast_ray(ray: Ray) -> vec3<f32> {
-    var min_toi: f32 = 100000.0;
-    var color = vec3<f32>(1.0, 1.0, 1.0);
-    if ray.dir.x < 0.0 {
-        let toi = (-4.0 - ray.origin.x) / ray.dir.x;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(1.0, 0.0, 0.0);
+fn cast_ray(in_ray: Ray) -> vec3<f32> {
+    var coef_color = vec3<f32>(1.0, 1.0, 1.0);
+    var offset_color = vec3<f32>(0.0, 0.0, 0.0);
+    var ray = in_ray;
+    for (var i: i32 = 0; i < REFLECTIONS_N; i++) {
+        var min_toi: f32 = MAX_TOI;
+        var color = vec3<f32>(1.0, 0.0, 0.0);
+        var normal = vec3<f32>(0.0, 0.0, 0.0);
+        var with_sphere = false;
+        if abs(ray.dir.x) > EPSILON {
+            if ray.dir.x < 0.0 {
+                let toi = (-4.0 - ray.origin.x) / ray.dir.x;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.5, 0.0, 0.5);
+                    normal = vec3<f32>(1.0, 0.0, 0.0);
+                }
+            } else {
+                let toi = (4.0 - ray.origin.x) / ray.dir.x;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.5, 0.0, 0.0);
+                    normal = vec3<f32>(-1.0, 0.0, 0.0);
+                }
+            }
         }
-    } else {
-        let toi = (4.0 - ray.origin.x) / ray.dir.x;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(0.0, 1.0, 0.0);
+        if abs(ray.dir.y) > EPSILON {
+            if ray.dir.y < 0.0 {
+                let toi = (-2.0 - ray.origin.y) / ray.dir.y;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.0, 0.5, 0.5);
+                    normal = vec3<f32>(0.0, 1.0, 0.0);
+                }
+            } else {
+                let toi = (2.0 - ray.origin.y) / ray.dir.y;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.5, 0.5, 0.0);
+                    normal = vec3<f32>(0.0, -1.0, 0.0);
+                }
+            }
+        }
+        if abs(ray.dir.z) > EPSILON {
+            if ray.dir.z < 0.0 {
+                let toi = (-0.0 - ray.origin.z) / ray.dir.z;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.0, 0.5, 0.0);
+                    normal = vec3<f32>(0.0, 0.0, 1.0);
+                }
+            } else {
+                let toi = (16.0 - ray.origin.z) / ray.dir.z;
+                if toi < min_toi {
+                    min_toi = toi;
+                    color = vec3<f32>(0.0, 0.0, 0.5);
+                    normal = vec3<f32>(0.0, 0.0, -1.0);
+                }
+            }
+        }
+        {
+            let toi = intersects_sphere(ray, SPHERE_POS, SPHERE_R);
+            if toi > EPSILON && toi < min_toi {
+                min_toi = toi;
+                let poi: vec3<f32> = ray.origin + ray.dir * toi;
+                normal = normalize(poi - SPHERE_POS);
+                color = vec3<f32>(0.3, 0.3, 0.3);
+                with_sphere = true;
+            }
+        }
+
+        if min_toi < MAX_TOI {
+            let poi: vec3<f32> = ray.origin + ray.dir * min_toi;
+            if !with_sphere {
+                let offset_poi = (poi + vec3<f32>(1000.0, 1000.0, 1000.0)) * 1.5;
+                let checkered : i32 = i32(round(offset_poi.x)) + i32(round(offset_poi.y)) + i32(round(offset_poi.z));
+                if checkered % 2 == 0 {
+                    offset_color += coef_color * color;
+                    coef_color *= vec3<f32>(0.0, 0.0, 0.0);
+                    break;
+                }
+            }
+            let reflection_dir = ray.dir - 2.0 * dot(ray.dir, normal) * normal;
+            ray.origin = poi;
+            ray.dir = reflection_dir;
+            offset_color += coef_color * color;
+            if with_sphere {
+            coef_color *= vec3<f32>(0.5, 0.5, 0.5);
+            } else {
+            coef_color *= vec3<f32>(0.3, 0.3, 0.3);
+                
+            }
+        } else {
+            break;
         }
     }
-    if ray.dir.y < 0.0 {
-        let toi = (-2.0 - ray.origin.y) / ray.dir.y;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(0.0, 0.0, 1.0);
-        }
-    } else {
-        let toi = (2.0 - ray.origin.y) / ray.dir.y;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(0.0, 1.0, 1.0);
-        }
-    }
-    if ray.dir.z < 0.0 {
-        let toi = (-0.0 - ray.origin.z) / ray.dir.z;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(1.0, 0.0, 1.0);
-        }
-    } else {
-        let toi = (16.0 - ray.origin.z) / ray.dir.z;
-        if toi < min_toi {
-            min_toi = toi;
-            color = vec3<f32>(1.0, 1.0, 0.0);
-        }
-    }
-    if (intersects_sphere(ray, SPHERE_POS, SPHERE_R) < min_toi) {
-        color = vec3<f32>(1.0, 1.0, 1.0);
-    }
-    return color;
+    return offset_color + coef_color;
 }
 
 fn trace_for_point(coord: vec2<f32>) -> vec3<f32> {

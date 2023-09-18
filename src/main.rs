@@ -12,6 +12,7 @@ use winit::{
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct RayTracingParams {
     camera_pos: [f32; 4],
+    aspect_ratio: [f32; 4],
 }
 
 const SAMPLE_COUNT: u32 = 4;
@@ -26,6 +27,7 @@ struct Renderer {
     bind_group: wgpu::BindGroup,
     multisampled_framebuffer: wgpu::TextureView,
     camera_x: f32,
+    aspect_ratio: f32,
 }
 
 impl Renderer {
@@ -158,12 +160,14 @@ impl Renderer {
             bind_group,
             multisampled_framebuffer,
             camera_x: 0.0f32,
+            aspect_ratio: (size.width as f32) / (size.height as f32),
         }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
         self.surface_config.width = width;
         self.surface_config.height = height;
+        self.aspect_ratio = (width as f32) / (height as f32);
         self.surface.configure(&self.device, &self.surface_config);
         let multisampled_texture_extend = wgpu::Extent3d {
             width,
@@ -203,6 +207,7 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[RayTracingParams {
                 camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
+                aspect_ratio: [self.aspect_ratio, 0.0, 0.0, 0.0],
             }]),
         );
         {
