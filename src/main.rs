@@ -8,11 +8,22 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+const MAX_SPHERES_COUNT: usize = 100;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct RayTracingParams {
     camera_pos: [f32; 4],
-    aspect_ratio: [f32; 4],
+    aspect_ratio: f32,
+    spheres_count: u32,
+    _padding: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct Sphere {
+    pos: [f32; 3],
+    r: f32,
 }
 
 const SAMPLE_COUNT: u32 = 4;
@@ -24,6 +35,7 @@ struct Renderer {
     device: wgpu::Device,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
+    spheres_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     multisampled_framebuffer: wgpu::TextureView,
     camera_x: f32,
@@ -60,10 +72,10 @@ impl Renderer {
                 "shader.wgsl"
             ))),
         });
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[wgpu::BindGroupLayoutEntry {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -74,21 +86,46 @@ impl Renderer {
                         ),
                     },
                     count: None,
-                }],
-            });
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+                        ),
+                    },
+                    count: None,
+                },
+            ],
+        });
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: mem::size_of::<RayTracingParams>() as _,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let spheres_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: spheres_buffer.as_entire_binding(),
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -157,6 +194,7 @@ impl Renderer {
             device,
             render_pipeline,
             uniform_buffer,
+            spheres_buffer,
             bind_group,
             multisampled_framebuffer,
             camera_x: 0.0f32,
@@ -207,8 +245,32 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[RayTracingParams {
                 camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
-                aspect_ratio: [self.aspect_ratio, 0.0, 0.0, 0.0],
+                aspect_ratio: self.aspect_ratio,
+                spheres_count: 4,
+                _padding: [0.0, 0.0],
             }]),
+        );
+        self.queue.write_buffer(
+            &self.spheres_buffer,
+            0,
+            bytemuck::cast_slice(&[
+                Sphere {
+                    pos: [0.0, 0.0, 10.0],
+                    r: 1.0,
+                },
+                Sphere {
+                    pos: [1.0, 1.0, 15.0],
+                    r: 0.4,
+                },
+                Sphere {
+                    pos: [1.0, 0.0, 18.0],
+                    r: 0.4,
+                },
+                Sphere {
+                    pos: [2.0, 0.0, 2.0],
+                    r: 1.0,
+                },
+            ]),
         );
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -269,7 +331,7 @@ async fn run() {
                     },
                 ..
             } => {
-                renderer.move_x(-0.1);
+                renderer.move_x(0.1);
                 renderer.render();
             }
             WindowEvent::KeyboardInput {
@@ -281,7 +343,7 @@ async fn run() {
                     },
                 ..
             } => {
-                renderer.move_x(0.1);
+                renderer.move_x(-0.1);
                 renderer.render();
             }
             _ => {}

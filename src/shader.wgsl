@@ -42,18 +42,24 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 // Ray-tracing stars here
 struct RayTracingParams {
     camera_pos: vec4<f32>,    
-    aspect_ratio: vec4<f32>,
+    aspect_ratio: f32,
+    spheres_count: u32,
+    _padding: vec2<f32>,
 };
 
+struct Sphere {
+    pos: vec3<f32>,
+    r: f32,
+}
+
 @group(0) @binding(0) var<uniform> params: RayTracingParams;
+@group(0) @binding(1) var<storage, read> spheres: array<Sphere>;
 
 const CAMERA_X_AXIS: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 const CAMERA_Y_AXIS: vec3<f32> = vec3<f32>(0.0, -1.0, 0.0);
 const F32_MAX: f32 = 3.40282347E+38;
 const EPSILON: f32 = 0.0001;
-const SPHERE_R: f32 = 1.0;
-const SPHERE_POS: vec3<f32> = vec3<f32>(0.0, 0.0, 10.0);
-const REFLECTIONS_N: i32 = 5;
+const REFLECTIONS_N: i32 = 10;
 const MAX_TOI: f32 = 100000.0;
 
 struct Ray {
@@ -64,7 +70,7 @@ struct Ray {
 fn make_start_ray_for_point(coord: vec2<f32>) -> Ray {
     var ray: Ray;
     ray.origin = params.camera_pos.xyz;
-    let dir_point = (coord.x - 0.5) * CAMERA_X_AXIS + (coord.y - 0.5) * CAMERA_Y_AXIS / params.aspect_ratio.x;
+    let dir_point = (coord.x - 0.5) * CAMERA_X_AXIS + (coord.y - 0.5) * CAMERA_Y_AXIS / params.aspect_ratio;
     ray.dir = dir_point - params.camera_pos.xyz;
     return ray;
 }
@@ -151,12 +157,13 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
                 }
             }
         }
-        {
-            let toi = intersects_sphere(ray, SPHERE_POS, SPHERE_R);
+
+        for (var sphere: u32 = 0u; sphere < params.spheres_count; sphere++) {
+            let toi = intersects_sphere(ray, spheres[sphere].pos, spheres[sphere].r);
             if toi > EPSILON && toi < min_toi {
                 min_toi = toi;
                 let poi: vec3<f32> = ray.origin + ray.dir * toi;
-                normal = normalize(poi - SPHERE_POS);
+                normal = normalize(poi - spheres[sphere].pos);
                 color = vec3<f32>(0.3, 0.3, 0.3);
                 with_sphere = true;
             }
