@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use pollster::FutureExt as _;
-use std::mem;
+use std::{mem, time::Instant};
 use tracing::debug;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -40,6 +40,7 @@ struct Renderer {
     multisampled_framebuffer: wgpu::TextureView,
     camera_x: f32,
     aspect_ratio: f32,
+    spheres: Vec<Sphere>,
 }
 
 impl Renderer {
@@ -187,6 +188,17 @@ impl Renderer {
             .create_texture(&multisampled_texture_descriptor)
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let spheres = vec![
+            Sphere {
+                pos: [0.0, 0.0, 6.0],
+                r: 1.0,
+            },
+            Sphere {
+                pos: [2.0, 1.0, 8.0],
+                r: 0.5,
+            },
+        ];
+
         Renderer {
             surface,
             surface_config,
@@ -199,6 +211,7 @@ impl Renderer {
             multisampled_framebuffer,
             camera_x: 0.0f32,
             aspect_ratio: (size.width as f32) / (size.height as f32),
+            spheres,
         }
     }
 
@@ -246,32 +259,12 @@ impl Renderer {
             bytemuck::cast_slice(&[RayTracingParams {
                 camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
                 aspect_ratio: self.aspect_ratio,
-                spheres_count: 4,
+                spheres_count: self.spheres.len() as u32,
                 _padding: [0.0, 0.0],
             }]),
         );
-        self.queue.write_buffer(
-            &self.spheres_buffer,
-            0,
-            bytemuck::cast_slice(&[
-                Sphere {
-                    pos: [0.0, 0.0, 10.0],
-                    r: 1.0,
-                },
-                Sphere {
-                    pos: [1.0, 1.0, 15.0],
-                    r: 0.4,
-                },
-                Sphere {
-                    pos: [1.0, 0.0, 18.0],
-                    r: 0.4,
-                },
-                Sphere {
-                    pos: [2.0, 0.0, 2.0],
-                    r: 1.0,
-                },
-            ]),
-        );
+        self.queue
+            .write_buffer(&self.spheres_buffer, 0, bytemuck::cast_slice(&self.spheres));
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -303,6 +296,8 @@ async fn run() {
     let window = WindowBuilder::new()
         .build(&event_loop)
         .expect("Can't create window");
+    let mut frames_start = Instant::now();
+    let mut frame_count = 0;
     let mut renderer = Renderer::new(&window).await;
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -349,7 +344,21 @@ async fn run() {
             _ => {}
         },
         Event::RedrawRequested(_) => {
+            frame_count += 1;
+            if frame_count >= 1000 {
+                let elapsed_time = frames_start.elapsed().as_secs_f32();
+                println!(
+                    "Frame time {}ms, fps {}",
+                    elapsed_time * 1000.0 / frame_count as f32,
+                    frame_count as f32 / elapsed_time
+                );
+                frame_count = 0;
+                frames_start = Instant::now();
+            }
             renderer.render();
+        }
+        Event::RedrawEventsCleared => {
+            window.request_redraw();
         }
         _ => {}
     });

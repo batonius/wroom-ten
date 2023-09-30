@@ -59,7 +59,7 @@ const CAMERA_X_AXIS: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 const CAMERA_Y_AXIS: vec3<f32> = vec3<f32>(0.0, -1.0, 0.0);
 const F32_MAX: f32 = 3.40282347E+38;
 const EPSILON: f32 = 0.0001;
-const REFLECTIONS_N: i32 = 10;
+const REFLECTIONS_N: i32 = 5;
 const MAX_TOI: f32 = 100000.0;
 
 struct Ray {
@@ -164,7 +164,7 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
                 min_toi = toi;
                 let poi: vec3<f32> = ray.origin + ray.dir * toi;
                 normal = normalize(poi - spheres[sphere].pos);
-                color = vec3<f32>(0.3, 0.3, 0.3);
+                color = vec3<f32>(0.1, 0.1, 0.1);
                 with_sphere = true;
             }
         }
@@ -185,10 +185,9 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
             ray.dir = reflection_dir;
             offset_color += coef_color * color;
             if with_sphere {
-            coef_color *= vec3<f32>(0.5, 0.5, 0.5);
+                coef_color *= vec3<f32>(0.7, 0.7, 0.7);
             } else {
-            coef_color *= vec3<f32>(0.3, 0.3, 0.3);
-                
+                coef_color *= vec3<f32>(0.3, 0.3, 0.3);
             }
         } else {
             break;
