@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use pollster::FutureExt as _;
+use rand::{distributions::Uniform, thread_rng, Rng};
 use std::{mem, time::Instant};
 use tracing::debug;
 use winit::{
@@ -8,7 +9,7 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
-const MAX_SPHERES_COUNT: usize = 100;
+const MAX_SPHERES_COUNT: usize = 1000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -26,6 +27,7 @@ struct Sphere {
     pos: [f32; 3],
     r: f32,
     vel: [f32; 4],
+    color: [f32; 4],
 }
 
 const SAMPLE_COUNT: u32 = 4;
@@ -48,23 +50,34 @@ struct Renderer {
 }
 
 fn init_spheres() -> Vec<Sphere> {
-    return vec![
-        Sphere {
-            pos: [0.0, 0.0, 6.0],
-            r: 1.0,
-            vel: [1.0, 0.0, 0.0, 0.0],
-        },
-        Sphere {
-            pos: [2.0, 1.0, 8.0],
-            r: 0.5,
-            vel: [0.0, 1.0, 0.0, 0.0],
-        },
-        Sphere {
-            pos: [-2.0, -1.0, 8.0],
-            r: 0.3,
-            vel: [0.0, 0.0, 0.1, 0.0],
-        },
-    ];
+    let mut spheres = Vec::with_capacity(MAX_SPHERES_COUNT);
+    let mut rng = thread_rng();
+    let x_dist = Uniform::new(-3.0, 3.0);
+    let y_dist = Uniform::new(-1.0, 1.0);
+    let z_dist = Uniform::new(1.0, 15.0);
+    let r_dist = Uniform::new(0.05, 0.1);
+    let vel_dist = Uniform::new(0.0, 0.5);
+    let rgb_dist = Uniform::new(0.0, 0.5);
+    let refl_dist = Uniform::new(0.0, 0.9);
+    for _ in 0..MAX_SPHERES_COUNT {
+        spheres.push(Sphere {
+            pos: [rng.sample(x_dist), rng.sample(y_dist), rng.sample(z_dist)],
+            r: rng.sample(r_dist),
+            vel: [
+                rng.sample(vel_dist),
+                rng.sample(vel_dist),
+                rng.sample(vel_dist),
+                0.0,
+            ],
+            color: [
+                rng.sample(rgb_dist),
+                rng.sample(rgb_dist),
+                rng.sample(rgb_dist),
+                rng.sample(refl_dist),
+            ],
+        })
+    }
+    return spheres;
 }
 
 impl Renderer {

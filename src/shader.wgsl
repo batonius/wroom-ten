@@ -51,6 +51,7 @@ struct Sphere {
     pos: vec3<f32>,
     r: f32,
     _vel: vec4<f32>,
+    color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: RayTracingParams;
@@ -106,6 +107,7 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
         var min_toi: f32 = MAX_TOI;
         var color = vec3<f32>(1.0, 0.0, 0.0);
         var normal = vec3<f32>(0.0, 0.0, 0.0);
+        var refl = 0.0;
         var with_sphere = false;
         if abs(ray.dir.x) > EPSILON {
             if ray.dir.x < 0.0 {
@@ -165,7 +167,8 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
                 min_toi = toi;
                 let poi: vec3<f32> = ray.origin + ray.dir * toi;
                 normal = normalize(poi - spheres[sphere].pos);
-                color = vec3<f32>(0.1, 0.1, 0.1);
+                color = spheres[sphere].color.xyz;
+                refl = spheres[sphere].color[3];
                 with_sphere = true;
             }
         }
@@ -186,7 +189,7 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
             ray.dir = reflection_dir;
             offset_color += coef_color * color;
             if with_sphere {
-                coef_color *= vec3<f32>(0.7, 0.7, 0.7);
+                coef_color *= refl;
             } else {
                 coef_color *= vec3<f32>(0.3, 0.3, 0.3);
             }
