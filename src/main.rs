@@ -16,7 +16,8 @@ struct RayTracingParams {
     camera_pos: [f32; 4],
     aspect_ratio: f32,
     spheres_count: u32,
-    _padding: [f32; 2],
+    time_elapsed: f32,
+    _padding: f32,
 }
 
 #[repr(C)]
@@ -24,6 +25,7 @@ struct RayTracingParams {
 struct Sphere {
     pos: [f32; 3],
     r: f32,
+    vel: [f32; 4],
 }
 
 const SAMPLE_COUNT: u32 = 4;
@@ -34,13 +36,35 @@ struct Renderer {
     queue: wgpu::Queue,
     device: wgpu::Device,
     render_pipeline: wgpu::RenderPipeline,
+    compute_pipeline: wgpu::ComputePipeline,
     uniform_buffer: wgpu::Buffer,
-    spheres_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    render_bind_groups: [wgpu::BindGroup; 2],
+    compute_bind_groups: [wgpu::BindGroup; 2],
     multisampled_framebuffer: wgpu::TextureView,
     camera_x: f32,
     aspect_ratio: f32,
-    spheres: Vec<Sphere>,
+    spheres_count: u32,
+    frame_start: Instant,
+}
+
+fn init_spheres() -> Vec<Sphere> {
+    return vec![
+        Sphere {
+            pos: [0.0, 0.0, 6.0],
+            r: 1.0,
+            vel: [1.0, 0.0, 0.0, 0.0],
+        },
+        Sphere {
+            pos: [2.0, 1.0, 8.0],
+            r: 0.5,
+            vel: [0.0, 1.0, 0.0, 0.0],
+        },
+        Sphere {
+            pos: [-2.0, -1.0, 8.0],
+            r: 0.3,
+            vel: [0.0, 0.0, 0.1, 0.0],
+        },
+    ];
 }
 
 impl Renderer {
@@ -67,6 +91,131 @@ impl Renderer {
             )
             .await
             .expect("Can't get a device.");
+        //Buffers
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: mem::size_of::<RayTracingParams>() as _,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let spheres = init_spheres();
+        let spheres_buffers = [
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        ];
+        for i in 0..2 {
+            queue.write_buffer(&spheres_buffers[i], 0, bytemuck::cast_slice(&spheres));
+        }
+        // Compute pipeline
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "compute.wgsl"
+            ))),
+        });
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                mem::size_of::<RayTracingParams>() as _,
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
+                            ),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: "main",
+        });
+        let compute_bind_groups = [
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &compute_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: spheres_buffers[0].as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: spheres_buffers[1].as_entire_binding(),
+                    },
+                ],
+            }),
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &compute_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: spheres_buffers[1].as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: spheres_buffers[0].as_entire_binding(),
+                    },
+                ],
+            }),
+        ];
+        // Graphics pipeline
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
@@ -102,32 +251,36 @@ impl Renderer {
                 },
             ],
         });
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: mem::size_of::<RayTracingParams>() as _,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let spheres_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (mem::size_of::<Sphere>() * MAX_SPHERES_COUNT) as _,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: spheres_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let render_bind_groups = [
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: spheres_buffers[0].as_entire_binding(),
+                    },
+                ],
+            }),
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: spheres_buffers[1].as_entire_binding(),
+                    },
+                ],
+            }),
+        ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&bind_group_layout],
@@ -188,30 +341,21 @@ impl Renderer {
             .create_texture(&multisampled_texture_descriptor)
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let spheres = vec![
-            Sphere {
-                pos: [0.0, 0.0, 6.0],
-                r: 1.0,
-            },
-            Sphere {
-                pos: [2.0, 1.0, 8.0],
-                r: 0.5,
-            },
-        ];
-
         Renderer {
             surface,
             surface_config,
             queue,
             device,
             render_pipeline,
+            compute_pipeline,
             uniform_buffer,
-            spheres_buffer,
-            bind_group,
+            render_bind_groups,
+            compute_bind_groups,
             multisampled_framebuffer,
             camera_x: 0.0f32,
             aspect_ratio: (size.width as f32) / (size.height as f32),
-            spheres,
+            spheres_count: spheres.len() as u32,
+            frame_start: Instant::now(),
         }
     }
 
@@ -242,7 +386,7 @@ impl Renderer {
             .create_view(&wgpu::TextureViewDescriptor::default());
     }
 
-    fn render(&mut self) {
+    fn render(&mut self, odd_frame: bool) {
         let frame = self
             .surface
             .get_current_texture()
@@ -259,12 +403,22 @@ impl Renderer {
             bytemuck::cast_slice(&[RayTracingParams {
                 camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
                 aspect_ratio: self.aspect_ratio,
-                spheres_count: self.spheres.len() as u32,
-                _padding: [0.0, 0.0],
+                spheres_count: self.spheres_count as u32,
+                time_elapsed: self.frame_start.elapsed().as_secs_f32(),
+                _padding: 0.0,
             }]),
         );
-        self.queue
-            .write_buffer(&self.spheres_buffer, 0, bytemuck::cast_slice(&self.spheres));
+        {
+            let mut cpass =
+                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.set_bind_group(
+                0,
+                &(self.compute_bind_groups[if odd_frame { 1 } else { 0 }]),
+                &[],
+            );
+            cpass.dispatch_workgroups(self.spheres_count, 1, 1);
+        }
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -279,11 +433,16 @@ impl Renderer {
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_bind_group(
+                0,
+                &(self.render_bind_groups[if odd_frame { 1 } else { 0 }]),
+                &[],
+            );
             rpass.draw(0..6, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        self.frame_start = Instant::now();
     }
 
     fn move_x(&mut self, delta: f32) {
@@ -327,7 +486,7 @@ async fn run() {
                 ..
             } => {
                 renderer.move_x(0.1);
-                renderer.render();
+                renderer.render(frame_count % 2 == 1);
             }
             WindowEvent::KeyboardInput {
                 input:
@@ -339,7 +498,7 @@ async fn run() {
                 ..
             } => {
                 renderer.move_x(-0.1);
-                renderer.render();
+                renderer.render(frame_count % 2 == 1);
             }
             _ => {}
         },
@@ -348,14 +507,14 @@ async fn run() {
             if frame_count >= 1000 {
                 let elapsed_time = frames_start.elapsed().as_secs_f32();
                 println!(
-                    "Frame time {}ms, fps {}",
+                    "Avg frame time {}ms, {} fps",
                     elapsed_time * 1000.0 / frame_count as f32,
                     frame_count as f32 / elapsed_time
                 );
                 frame_count = 0;
                 frames_start = Instant::now();
             }
-            renderer.render();
+            renderer.render(frame_count % 2 == 1);
         }
         Event::RedrawEventsCleared => {
             window.request_redraw();

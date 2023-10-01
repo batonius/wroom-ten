@@ -39,7 +39,7 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(trace_for_point(vertex.tex_coords.xy), 1.0);
 }
 
-// Ray-tracing stars here
+// Ray-tracing starts here
 struct RayTracingParams {
     camera_pos: vec4<f32>,    
     aspect_ratio: f32,
@@ -50,6 +50,7 @@ struct RayTracingParams {
 struct Sphere {
     pos: vec3<f32>,
     r: f32,
+    _vel: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: RayTracingParams;
@@ -75,7 +76,7 @@ fn make_start_ray_for_point(coord: vec2<f32>) -> Ray {
     return ray;
 }
 
-fn intersects_sphere(ray: Ray, pos: vec3<f32>, r: f32) -> f32 {
+fn intersect_sphere(ray: Ray, pos: vec3<f32>, r: f32) -> f32 {
     let dir_squared = ray.dir * ray.dir;
     let delta = ray.origin - pos;
     let r_squared = r * r;
@@ -159,7 +160,7 @@ fn cast_ray(in_ray: Ray) -> vec3<f32> {
         }
 
         for (var sphere: u32 = 0u; sphere < params.spheres_count; sphere++) {
-            let toi = intersects_sphere(ray, spheres[sphere].pos, spheres[sphere].r);
+            let toi = intersect_sphere(ray, spheres[sphere].pos, spheres[sphere].r);
             if toi > EPSILON && toi < min_toi {
                 min_toi = toi;
                 let poi: vec3<f32> = ray.origin + ray.dir * toi;
