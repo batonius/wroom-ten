@@ -41,7 +41,7 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 
 // Ray-tracing starts here
 struct RayTracingParams {
-    camera_pos: vec4<f32>,    
+    camera_pos: vec4<f32>,
     aspect_ratio: f32,
     spheres_count: u32,
     _padding: vec2<f32>,
