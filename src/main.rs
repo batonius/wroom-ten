@@ -1,12 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 use pollster::FutureExt as _;
-use rand::{distributions::Uniform, thread_rng, Rng};
-use std::{mem, time::Instant};
+use rand::{distr::Uniform, rng, RngExt};
+use std::{mem, sync::Arc, time::Instant};
 use tracing::debug;
 use winit::{
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    event_loop::{ControlFlow, EventLoop, OwnedDisplayHandle},
+    window::Window,
 };
 
 const MAX_SPHERES_COUNT: usize = 1000;
@@ -33,7 +32,7 @@ struct Sphere {
 const SAMPLE_COUNT: u32 = 4;
 
 struct Renderer {
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     queue: wgpu::Queue,
     device: wgpu::Device,
@@ -47,18 +46,19 @@ struct Renderer {
     aspect_ratio: f32,
     spheres_count: u32,
     frame_start: Instant,
+    window: Arc<Window>,
 }
 
 fn init_spheres() -> Vec<Sphere> {
     let mut spheres = Vec::with_capacity(MAX_SPHERES_COUNT);
-    let mut rng = thread_rng();
-    let x_dist = Uniform::new(-3.0, 3.0);
-    let y_dist = Uniform::new(-1.0, 1.0);
-    let z_dist = Uniform::new(1.0, 15.0);
-    let r_dist = Uniform::new(0.05, 0.1);
-    let vel_dist = Uniform::new(0.0, 0.5);
-    let rgb_dist = Uniform::new(0.0, 0.5);
-    let refl_dist = Uniform::new(0.0, 0.9);
+    let mut rng = rng();
+    let x_dist = Uniform::new(-3.0, 3.0).unwrap();
+    let y_dist = Uniform::new(-1.0, 1.0).unwrap();
+    let z_dist = Uniform::new(1.0, 15.0).unwrap();
+    let r_dist = Uniform::new(0.05, 0.1).unwrap();
+    let vel_dist = Uniform::new(0.0, 0.5).unwrap();
+    let rgb_dist = Uniform::new(0.0, 0.5).unwrap();
+    let refl_dist = Uniform::new(0.0, 0.9).unwrap();
     for _ in 0..MAX_SPHERES_COUNT {
         spheres.push(Sphere {
             pos: [rng.sample(x_dist), rng.sample(y_dist), rng.sample(z_dist)],
@@ -77,31 +77,36 @@ fn init_spheres() -> Vec<Sphere> {
             ],
         })
     }
-    return spheres;
+    spheres
 }
 
 impl Renderer {
-    async fn new(window: &Window) -> Self {
-        let instance = wgpu::Instance::default();
+    async fn new(display: OwnedDisplayHandle, window: Arc<Window>) -> Self {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
         let size = window.inner_size();
-        let surface = unsafe { instance.create_surface(window) }.expect("Can't create surface");
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("Can't create surface");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .expect("Can't get an adapter.");
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
-                    limits: adapter.limits(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
+                required_limits: adapter.limits(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .expect("Can't get a device.");
         //Buffers
@@ -126,8 +131,8 @@ impl Renderer {
                 mapped_at_creation: false,
             }),
         ];
-        for i in 0..2 {
-            queue.write_buffer(&spheres_buffers[i], 0, bytemuck::cast_slice(&spheres));
+        for sphere_buffer in &spheres_buffers {
+            queue.write_buffer(sphere_buffer, 0, bytemuck::cast_slice(&spheres));
         }
         // Compute pipeline
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -181,14 +186,16 @@ impl Renderer {
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&compute_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&compute_bind_group_layout)],
+                immediate_size: 0,
             });
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
-            entry_point: "main",
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
         });
         let compute_bind_groups = [
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -296,8 +303,8 @@ impl Renderer {
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
@@ -306,13 +313,15 @@ impl Renderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(swapchain_format.into())],
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -320,7 +329,8 @@ impl Renderer {
                 count: 4,
                 ..Default::default()
             },
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         let surface_config = wgpu::SurfaceConfiguration {
@@ -331,6 +341,8 @@ impl Renderer {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: swapchain_capabilities.alpha_modes[0],
             view_formats: vec![],
+            color_space: Default::default(),
+            desired_maximum_frame_latency: 0,
         };
         surface.configure(&device, &surface_config);
 
@@ -369,6 +381,7 @@ impl Renderer {
             aspect_ratio: (size.width as f32) / (size.height as f32),
             spheres_count: spheres.len() as u32,
             frame_start: Instant::now(),
+            window,
         }
     }
 
@@ -400,10 +413,9 @@ impl Renderer {
     }
 
     fn render(&mut self, odd_frame: bool) {
-        let frame = self
-            .surface
-            .get_current_texture()
-            .expect("Can't get swap chain texture");
+        let wgpu::CurrentSurfaceTexture::Success(frame) = self.surface.get_current_texture() else {
+            return;
+        };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -416,14 +428,16 @@ impl Renderer {
             bytemuck::cast_slice(&[RayTracingParams {
                 camera_pos: [self.camera_x, 0.0, -1.0, 0.0],
                 aspect_ratio: self.aspect_ratio,
-                spheres_count: self.spheres_count as u32,
+                spheres_count: self.spheres_count,
                 time_elapsed: self.frame_start.elapsed().as_secs_f32(),
                 _padding: 0.0,
             }]),
         );
         {
-            let mut cpass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(
                 0,
@@ -440,10 +454,14 @@ impl Renderer {
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: false,
+                        store: wgpu::StoreOp::Discard,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
             rpass.set_bind_group(
@@ -454,86 +472,81 @@ impl Renderer {
             rpass.draw(0..6, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
         self.frame_start = Instant::now();
     }
 
-    fn move_x(&mut self, delta: f32) {
-        self.camera_x += delta;
+    fn request_redraw(&self) {
+        self.window.request_redraw()
+    }
+}
+
+struct App {
+    renderer: Option<Renderer>,
+    frame_count: u64,
+    frames_start: Instant,
+}
+
+impl App {
+    fn new() -> Self {
+        App {
+            renderer: None,
+            frame_count: 0,
+            frames_start: Instant::now(),
+        }
+    }
+}
+
+impl winit::application::ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes())
+                .unwrap(),
+        );
+        let renderer = pollster::block_on(Renderer::new(
+            event_loop.owned_display_handle(),
+            window.clone(),
+        ));
+        self.renderer = Some(renderer);
+        window.request_redraw();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
+        match event {
+            winit::event::WindowEvent::CloseRequested => event_loop.exit(),
+            winit::event::WindowEvent::RedrawRequested => {
+                self.frame_count += 1;
+                if self.frame_count >= 1000 {
+                    let elapsed_time = self.frames_start.elapsed().as_secs_f32();
+                    println!(
+                        "Avg frame time {}ms, {} fps",
+                        elapsed_time * 1000.0 / self.frame_count as f32,
+                        self.frame_count as f32 / elapsed_time
+                    );
+                    self.frame_count = 0;
+                    self.frames_start = Instant::now();
+                }
+                renderer.render(self.frame_count % 2 == 1);
+                renderer.request_redraw();
+            }
+            winit::event::WindowEvent::Resized(size) => renderer.resize(size.width, size.height),
+            _ => (),
+        }
     }
 }
 
 async fn run() {
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .build(&event_loop)
-        .expect("Can't create window");
-    let mut frames_start = Instant::now();
-    let mut frame_count = 0;
-    let mut renderer = Renderer::new(&window).await;
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() => match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(size) => {
-                renderer.resize(size.width, size.height);
-            }
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Left),
-                        ..
-                    },
-                ..
-            } => {
-                renderer.move_x(0.1);
-                renderer.render(frame_count % 2 == 1);
-            }
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Right),
-                        ..
-                    },
-                ..
-            } => {
-                renderer.move_x(-0.1);
-                renderer.render(frame_count % 2 == 1);
-            }
-            _ => {}
-        },
-        Event::RedrawRequested(_) => {
-            frame_count += 1;
-            if frame_count >= 1000 {
-                let elapsed_time = frames_start.elapsed().as_secs_f32();
-                println!(
-                    "Avg frame time {}ms, {} fps",
-                    elapsed_time * 1000.0 / frame_count as f32,
-                    frame_count as f32 / elapsed_time
-                );
-                frame_count = 0;
-                frames_start = Instant::now();
-            }
-            renderer.render(frame_count % 2 == 1);
-        }
-        Event::RedrawEventsCleared => {
-            window.request_redraw();
-        }
-        _ => {}
-    });
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = App::new();
+    event_loop.run_app(&mut app).unwrap();
 }
 
 fn main() {
